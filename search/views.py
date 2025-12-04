@@ -277,3 +277,70 @@ def query_character(request):
           item["animeList"] = clean_anime(item["animeList"])
 
     return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
+
+@api_view(['GET'])
+def query_all(request):
+    search = request.GET.get("search", "")
+
+    query = f"""
+    PREFIX v: <http://kagebunshin.org/vocab/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    PREFIX vcard: <http://www.w3.org/2006/vcard/ns#>
+
+    SELECT DISTINCT 
+        ?resource
+        ?typeLabel
+        ?title
+        ?image
+        ?fullName
+
+    WHERE {{
+      VALUES ?prop {{
+        v:hasTitle
+        v:hasDesc
+        v:hasImage
+        v:hasType
+        v:hasStatus
+        v:hasSource
+        v:hasGenre
+        v:hasTheme
+        v:hasStudio
+        v:hasProducer
+        v:hasRating
+        v:hasCharacter
+        v:hasDemographic
+
+        vcard:hasURL
+        foaf:name
+        v:hasAltName
+        v:hasDescription
+        v:hasFullName
+        v:hasAttributes
+      }}
+
+      ?resource ?prop ?value .
+
+      FILTER(CONTAINS(LCASE(STR(?value)), LCASE("{search}")))
+        
+      OPTIONAL {{ ?resource v:hasTitle ?title . }}
+      OPTIONAL {{ ?resource v:hasImage ?image . }}
+
+      OPTIONAL {{ ?resource v:hasFullName ?fullName . }} 
+      
+      BIND(
+        IF(BOUND(?title), "anime",
+          IF(BOUND(?fullName), "character", "unknown")
+        ) AS ?typeLabel
+      )
+    }}
+    """
+
+    result = run_sparql(query)
+
+    if "error" in result:
+        return api_response(status.HTTP_500_INTERNAL_SERVER_ERROR, "Gagal ambil data", result)
+    
+    data = sparql_to_json(result)
+
+    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
+

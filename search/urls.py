@@ -11,4 +11,5 @@ urlpatterns = [
 
     path('anime/query/', query_anime, name='query_anime'),
     path('character/query/', query_character, name='query_character'),
+    path('all/query/', query_all, name='query_all'),
 ]
