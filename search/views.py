@@ -4,6 +4,7 @@ from api.sparql_client import run_sparql
 from api.views import sparql_to_json
 from kagebunshin.common.utils import api_response
 from difflib import SequenceMatcher
+import re
 
 # pakai run_sparql dari api/sparql_client.py untuk ambil data dari GraphDB
 # pakai sparql_to_json dari api/views.py untuk ratain (mempermudah) hasil SPARQL ke JSON biasa
@@ -249,6 +250,29 @@ def query_anime(request):
 def query_character(request):
     search = request.GET.get("search", "")
 
+    # Token search
+    normalized = re.sub(r"[^a-zA-Z0-9 ]+", " ", search.lower()).strip()
+    tokens = [t for t in normalized.split() if t]
+
+    # No space search
+    search_no_space = re.sub(r"[^a-zA-Z0-9]+", "", search.lower()).strip()
+
+    token_filters = "\n".join(
+        [f'FILTER(CONTAINS(REPLACE(LCASE(?fullName), "[^a-z0-9]", ""), "{token}"))'
+         for token in tokens]
+    ) if tokens else ""
+
+    exact_filter = ""
+    if search_no_space and " " not in search:
+        exact_filter = f'''
+        FILTER(CONTAINS(
+            REPLACE(LCASE(?fullName), "[^a-z0-9]", ""), 
+            "{search_no_space}"
+        ))
+        '''
+
+    all_filters = token_filters + "\n" + exact_filter
+
     query = f"""
     PREFIX v: <http://kagebunshin.org/vocab/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
@@ -258,11 +282,12 @@ def query_character(request):
       ?anime v:hasCharacter ?char ;
              v:hasTitle ?title .
 
-      ?char foaf:name ?name .
+      ?char foaf:name ?name ;
+            v:hasFullName ?fullName .
 
-      FILTER(CONTAINS(LCASE(?name), LCASE("{search}")))
+      {all_filters}
     }}
-    GROUP BY ?char ?name
+    GROUP BY ?char ?name ?fullName
     """
 
     result = run_sparql(query)
@@ -272,8 +297,9 @@ def query_character(request):
     
     data = sparql_to_json(result)
     data = rank_results(data, search, "name")
+
     for item in data:
-      if "animeList" in item:
-          item["animeList"] = clean_anime(item["animeList"])
+        if "animeList" in item:
+            item["animeList"] = clean_anime(item["animeList"])
 
     return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
