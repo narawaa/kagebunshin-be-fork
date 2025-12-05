@@ -388,56 +388,6 @@ def query_all(request):
     data = sparql_to_json(result)
 
     return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
-    genre = request.GET.get("genre", "").strip()
-
-    if not genre:
-        return api_response(
-            status.HTTP_400_BAD_REQUEST,
-            "Parameter 'genre' wajib diisi",
-            None
-        )
-
-    filter_genre = f"""
-    FILTER EXISTS {{
-      ?anime v:hasGenre ?g .
-      FILTER(LCASE(?g) = LCASE("{genre}"))
-    }}
-    """
-
-    query = f"""
-    PREFIX v: <http://kagebunshin.org/vocab/>
-
-    SELECT ?anime ?image ?title ?year
-           (GROUP_CONCAT(?genreAll; separator=",") AS ?genres)
-    WHERE {{
-      ?anime v:hasImage ?image ;
-             v:hasTitle ?title ;
-             v:hasGenre ?genreAll ;
-             v:isReleased ?releaseNode .
-
-      OPTIONAL {{
-        ?releaseNode v:releasedYear ?year .
-      }}
-
-      {filter_genre}
-    }}
-    GROUP BY ?anime ?image ?title ?year
-    """
-
-    result = run_sparql(query)
-
-    if "error" in result:
-        return api_response(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            "Gagal ambil data",
-            result
-        )
-
-    data = sparql_to_json(result)
-    for item in data:
-        if "genres" in item:
-            item["genres"] = clean_genres(item["genres"])
-    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
 
 def clean_anime(anime_str):
     return [a.strip() for a in anime_str.split(",") if a.strip()]
