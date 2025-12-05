@@ -681,4 +681,37 @@ def get_studio_wd_by_name(request, pk: str = None):
       'logo': read(b, 'logo'),
     }
 
+    # Also try to find anime in the local GraphDB tagged with the same studio
+    # We construct a likely local studio URI by replacing spaces with underscores
+    # e.g. studio_name "Toei Animation" -> http://kagebunshin.org/studio/Toei_Animation
+    local_studio_fragment = studio_name.replace(' ', '_')
+    local_studio_uri = f"http://kagebunshin.org/studio/{local_studio_fragment}"
+
+    local_query = f"""
+    PREFIX v: <http://kagebunshin.org/vocab/>
+
+    SELECT ?anime ?title
+    WHERE {{
+      VALUES ?studio {{ <{local_studio_uri}> }}
+      ?anime v:hasStudio ?studio .
+      OPTIONAL {{ ?anime v:hasTitle ?title . }}
+    }}
+    """
+
+    local_anime = []
+    try:
+      local_result = run_sparql(local_query)
+      if "error" not in local_result:
+        local_items = sparql_to_json(local_result)
+        for it in local_items:
+          local_anime.append({
+            'uri': it.get('anime'),
+            'title': it.get('title')
+          })
+    except Exception as e:
+      # ignore local lookup errors but include empty list
+      local_anime = []
+
+    data['localAnime'] = local_anime
+
     return api_response(status.HTTP_200_OK, 'Berhasil ambil data dari Wikidata (by name)', data)
