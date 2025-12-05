@@ -28,13 +28,15 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+  "kagebunshin-be.up.railway.app",
+  "localhost",
+  "127.0.0.1"
+]
 
-# During development allow CORS from the frontend dev server(s).
-# For a quick local dev fix we enable allow-all origins. Remove or
-# restrict this before deploying to production.
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
+    "https://kagebunshinn.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]

@@ -4,6 +4,10 @@ from api.sparql_client import run_sparql
 from api.views import sparql_to_json
 from kagebunshin.common.utils import api_response
 from difflib import SequenceMatcher
+import requests
+import re
+from difflib import SequenceMatcher
+import requests
 
 # pakai run_sparql dari api/sparql_client.py untuk ambil data dari GraphDB
 # pakai sparql_to_json dari api/views.py untuk ratain (mempermudah) hasil SPARQL ke JSON biasa
@@ -27,19 +31,19 @@ def get_data(request):
     data = sparql_to_json(result)
     return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
 
-def clean_genres(genres_str):
-    return [g.strip() for g in genres_str.split(",") if g.strip()]
+def str_to_list(str):
+    return [s.strip() for s in str.split(",") if s.strip()]
 
 @api_view(['GET'])
 def get_anime(request):
     query = """
     PREFIX v: <http://kagebunshin.org/vocab/>
 
-    SELECT ?anime ?image ?title ?year (GROUP_CONCAT(?genreAll; separator=",") AS ?genres)
+    SELECT ?anime ?image ?title ?year (GROUP_CONCAT(DISTINCT ?themeAll; separator=",") AS ?themes)
     WHERE {
       ?anime v:hasImage ?image ;
              v:hasTitle ?title ;
-             v:hasGenre ?genreAll ;
+             v:hasTheme ?themeAll ;
              v:isReleased ?releaseNode .
 
       OPTIONAL {
@@ -60,13 +64,330 @@ def get_anime(request):
 
     data = sparql_to_json(result)
     for item in data:
-        if "genres" in item:
-            item["genres"] = clean_genres(item["genres"])
+        if "themes" in item:
+            item["themes"] = str_to_list(item["themes"])
 
     return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
 
 @api_view(['GET'])
-def get_anime_by_genre(request):
+def get_anime_by_theme(request):
+    theme = request.GET.get("theme", "").strip()
+
+    if not theme:
+        return api_response(
+            status.HTTP_400_BAD_REQUEST,
+            "Parameter 'theme' wajib diisi",
+            None
+        )
+
+    filter_theme = f"""
+    FILTER EXISTS {{
+      ?anime v:hasTheme ?t .
+      FILTER(LCASE(?t) = LCASE("{theme}"))
+    }}
+    """
+
+    query = f"""
+    PREFIX v: <http://kagebunshin.org/vocab/>
+
+    SELECT ?anime ?image ?title ?year
+           (GROUP_CONCAT(DISTINCT ?themeAll; separator=",") AS ?themes)
+    WHERE {{
+      ?anime v:hasImage ?image ;
+             v:hasTitle ?title ;
+             v:hasTheme ?themeAll ;
+             v:isReleased ?releaseNode .
+
+      OPTIONAL {{
+        ?releaseNode v:releasedYear ?year .
+      }}
+
+      {filter_theme}
+    }}
+    GROUP BY ?anime ?image ?title ?year
+    """
+
+    result = run_sparql(query)
+
+    if "error" in result:
+        return api_response(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Gagal ambil data",
+            result
+        )
+
+    data = sparql_to_json(result)
+    for item in data:
+        if "themes" in item:
+            item["themes"] = str_to_list(item["themes"])
+    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
+
+@api_view(['GET'])
+def get_character(request):
+    query = """
+    PREFIX v: <http://kagebunshin.org/vocab/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+
+    SELECT ?char ?name (GROUP_CONCAT(DISTINCT ?title; separator=", ") AS ?animeList)
+    WHERE {
+      ?anime v:hasCharacter ?char ;
+        v:hasTitle ?title .
+
+      ?char foaf:name ?name .
+    }
+    GROUP BY ?char ?name
+
+    """
+    result = run_sparql(query) 
+
+    if "error" in result:
+        return api_response(status.HTTP_500_INTERNAL_SERVER_ERROR, "Gagal ambil data", result)
+    
+    data = sparql_to_json(result)
+    for item in data:
+      if "animeList" in item:
+          item["animeList"] = str_to_list(item["animeList"])
+    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
+
+def rank_results(results, query, field):
+    def similarity(a, b):
+        return SequenceMatcher(None, a, b).ratio()
+    
+    ranked_results = []
+    q = query.lower()
+
+    for row in results:
+        value = row.get(field, "").lower()
+        score = similarity(value, q) * 100
+        row['score'] = round(score, 2)
+        ranked_results.append(row)
+    
+    ranked_results.sort(key=lambda x: x['score'], reverse=True)
+    return ranked_results
+
+def sparql_anime(filter_title):
+    return f"""
+    PREFIX v: <http://kagebunshin.org/vocab/>
+
+    SELECT ?anime ?image ?title ?year
+           (GROUP_CONCAT(DISTINCT ?themeAll; separator=",") AS ?themes)
+    WHERE {{
+      ?anime v:hasImage ?image ;
+             v:hasTitle ?title ;
+             v:hasTheme ?themeAll ;
+             v:isReleased ?releaseNode .
+
+      OPTIONAL {{
+        ?releaseNode v:releasedYear ?year .
+      }}
+
+      {filter_title}
+    }}
+    GROUP BY ?anime ?image ?title ?year
+    """
+
+def sparql_anime_by_theme(filter_title, theme):
+    filter_theme = f"""
+    FILTER EXISTS {{
+      ?anime v:hasTheme ?t .
+      FILTER(CONTAINS(LCASE(?t), LCASE("{theme}")))
+    }}
+    """
+
+    return f"""
+    PREFIX v: <http://kagebunshin.org/vocab/>
+
+    SELECT ?anime ?image ?title ?year
+           (GROUP_CONCAT(DISTINCT ?themeAll; separator=",") AS ?themes)
+    WHERE {{
+      ?anime v:hasImage ?image ;
+             v:hasTitle ?title ;
+             v:hasTheme ?themeAll ;
+             v:isReleased ?releaseNode .
+
+      OPTIONAL {{
+        ?releaseNode v:releasedYear ?year .
+      }}
+
+      {filter_title}
+      {filter_theme}
+    }}
+    GROUP BY ?anime ?image ?title ?year
+    """
+
+@api_view(['GET'])
+def query_anime(request):
+    search = request.GET.get("search", "")
+    theme = request.GET.get("theme", "")
+
+    # Token search
+    normalized = re.sub(r"[^a-zA-Z0-9 ]+", " ", search.lower()).strip()
+    tokens = [t for t in normalized.split() if t]
+
+    # No space search
+    search_no_space = re.sub(r"[^a-zA-Z0-9]+", "", search.lower()).strip()
+
+    token_filters = "\n".join(
+        [f'FILTER(CONTAINS(REPLACE(LCASE(?title), "[^a-z0-9]", ""), "{token}"))'
+         for token in tokens]
+    ) if tokens else ""
+
+    exact_filter = ""
+    if search_no_space and " " not in search:
+        exact_filter = f'''
+        FILTER(CONTAINS(
+            REPLACE(LCASE(?title), "[^a-z0-9]", ""), 
+            "{search_no_space}"
+        ))
+        '''
+    
+    all_filters = token_filters + "\n" + exact_filter
+
+    if theme:
+      query = sparql_anime_by_theme(all_filters, theme)
+    else:
+      query = sparql_anime(all_filters)
+
+    result = run_sparql(query)
+
+    if "error" in result:
+      return api_response(
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        "Gagal ambil data",
+        result
+      )
+
+    data = sparql_to_json(result)
+    data = rank_results(data, search, "title")
+
+    for item in data:
+        item["themes"] = [g.strip() for g in item["themes"].split(",") if g.strip()]
+
+    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
+
+@api_view(['GET'])
+def query_character(request):
+    search = request.GET.get("search", "")
+
+    # Token search
+    normalized = re.sub(r"[^a-zA-Z0-9 ]+", " ", search.lower()).strip()
+    tokens = [t for t in normalized.split() if t]
+
+    # No space search
+    search_no_space = re.sub(r"[^a-zA-Z0-9]+", "", search.lower()).strip()
+
+    token_filters = "\n".join(
+        [f'FILTER(CONTAINS(REPLACE(LCASE(?fullName), "[^a-z0-9]", ""), "{token}"))'
+         for token in tokens]
+    ) if tokens else ""
+
+    exact_filter = ""
+    if search_no_space and " " not in search:
+        exact_filter = f'''
+        FILTER(CONTAINS(
+            REPLACE(LCASE(?fullName), "[^a-z0-9]", ""), 
+            "{search_no_space}"
+        ))
+        '''
+
+    all_filters = token_filters + "\n" + exact_filter
+
+    query = f"""
+    PREFIX v: <http://kagebunshin.org/vocab/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+
+    SELECT ?char ?name (GROUP_CONCAT(DISTINCT ?title; separator=", ") AS ?animeList)
+    WHERE {{
+      ?anime v:hasCharacter ?char ;
+             v:hasTitle ?title .
+
+      ?char foaf:name ?name ;
+            v:hasFullName ?fullName .
+
+      {all_filters}
+    }}
+    GROUP BY ?char ?name ?fullName
+    """
+
+    result = run_sparql(query)
+
+    if "error" in result:
+        return api_response(status.HTTP_500_INTERNAL_SERVER_ERROR, "Gagal ambil data", result)
+    
+    data = sparql_to_json(result)
+    data = rank_results(data, search, "name")
+
+    for item in data:
+        if "animeList" in item:
+            item["animeList"] = str_to_list(item["animeList"])
+
+    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
+
+@api_view(['GET'])
+def query_all(request):
+    search = request.GET.get("search", "")
+
+    query = f"""
+    PREFIX v: <http://kagebunshin.org/vocab/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    PREFIX vcard: <http://www.w3.org/2006/vcard/ns#>
+
+    SELECT DISTINCT 
+        ?resource
+        ?typeLabel
+        ?title
+        ?image
+        ?fullName
+
+    WHERE {{
+      VALUES ?prop {{
+        v:hasTitle
+        v:hasDesc
+        v:hasImage
+        v:hasType
+        v:hasStatus
+        v:hasSource
+        v:hasGenre
+        v:hasTheme
+        v:hasStudio
+        v:hasProducer
+        v:hasRating
+        v:hasCharacter
+        v:hasDemographic
+
+        vcard:hasURL
+        foaf:name
+        v:hasAltName
+        v:hasDescription
+        v:hasFullName
+        v:hasAttributes
+      }}
+
+      ?resource ?prop ?value .
+
+      FILTER(CONTAINS(LCASE(STR(?value)), LCASE("{search}")))
+        
+      OPTIONAL {{ ?resource v:hasTitle ?title . }}
+      OPTIONAL {{ ?resource v:hasImage ?image . }}
+
+      OPTIONAL {{ ?resource v:hasFullName ?fullName . }} 
+      
+      BIND(
+        IF(BOUND(?title), "anime",
+          IF(BOUND(?fullName), "character", "unknown")
+        ) AS ?typeLabel
+      )
+    }}
+    """
+
+    result = run_sparql(query)
+
+    if "error" in result:
+        return api_response(status.HTTP_500_INTERNAL_SERVER_ERROR, "Gagal ambil data", result)
+    
+    data = sparql_to_json(result)
+
+    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
     genre = request.GET.get("genre", "").strip()
 
     if not genre:
@@ -120,163 +441,6 @@ def get_anime_by_genre(request):
 
 def clean_anime(anime_str):
     return [a.strip() for a in anime_str.split(",") if a.strip()]
-
-@api_view(['GET'])
-def get_character(request):
-    query = """
-    PREFIX v: <http://kagebunshin.org/vocab/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-
-    SELECT ?char ?name (GROUP_CONCAT(?title; separator=", ") AS ?animeList)
-    WHERE {
-      ?anime v:hasCharacter ?char ;
-        v:hasTitle ?title .
-
-      ?char foaf:name ?name .
-    }
-    GROUP BY ?char ?name
-
-    """
-    result = run_sparql(query) 
-
-    if "error" in result:
-        return api_response(status.HTTP_500_INTERNAL_SERVER_ERROR, "Gagal ambil data", result)
-    
-    data = sparql_to_json(result)
-    for item in data:
-      if "animeList" in item:
-          item["animeList"] = clean_anime(item["animeList"])
-    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
-
-def rank_results(results, query, field):
-    def similarity(a, b):
-        return SequenceMatcher(None, a, b).ratio()
-    
-    ranked_results = []
-    q = query.lower()
-
-    for row in results:
-        value = row.get(field, "").lower()
-        score = similarity(value, q) * 100
-        row['score'] = round(score, 2)
-        ranked_results.append(row)
-    
-    ranked_results.sort(key=lambda x: x['score'], reverse=True)
-    return ranked_results
-
-def sparql_anime(search):
-    filter_title = f'FILTER(CONTAINS(LCASE(?title), LCASE("{search}")))'
-
-    return f"""
-    PREFIX v: <http://kagebunshin.org/vocab/>
-
-    SELECT ?anime ?image ?title ?year
-           (GROUP_CONCAT(?genreAll; separator=",") AS ?genres)
-    WHERE {{
-      ?anime v:hasImage ?image ;
-             v:hasTitle ?title ;
-             v:hasGenre ?genreAll ;
-             v:isReleased ?releaseNode .
-
-      OPTIONAL {{
-        ?releaseNode v:releasedYear ?year .
-      }}
-
-      {filter_title}
-    }}
-    GROUP BY ?anime ?image ?title ?year
-    """
-
-def sparql_anime_by_genre(search, genre):
-    filter_title = f'FILTER(CONTAINS(LCASE(?title), LCASE("{search}")))'
-
-    filter_genre = f"""
-    FILTER EXISTS {{
-      ?anime v:hasGenre ?g .
-      FILTER(CONTAINS(LCASE(?g), LCASE("{genre}")))
-    }}
-    """
-
-    return f"""
-    PREFIX v: <http://kagebunshin.org/vocab/>
-
-    SELECT ?anime ?image ?title ?year
-           (GROUP_CONCAT(?genreAll; separator=",") AS ?genres)
-    WHERE {{
-      ?anime v:hasImage ?image ;
-             v:hasTitle ?title ;
-             v:hasGenre ?genreAll ;
-             v:isReleased ?releaseNode .
-
-      OPTIONAL {{
-        ?releaseNode v:releasedYear ?year .
-      }}
-
-      {filter_title}
-      {filter_genre}
-    }}
-    GROUP BY ?anime ?image ?title ?year
-    """
-
-@api_view(['GET'])
-def query_anime(request):
-    search = request.GET.get("search", "")
-    genre = request.GET.get("genre", "")
-
-    if genre:
-      query = sparql_anime_by_genre(search, genre)
-    else:
-      query = sparql_anime(search)
-
-    result = run_sparql(query)
-
-    if "error" in result:
-      return api_response(
-        status.HTTP_500_INTERNAL_SERVER_ERROR,
-        "Gagal ambil data",
-        result
-      )
-
-    data = sparql_to_json(result)
-    data = rank_results(data, search, "title")
-
-    for item in data:
-        item["genres"] = [g.strip() for g in item["genres"].split(",") if g.strip()]
-
-    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
-
-@api_view(['GET'])
-def query_character(request):
-    search = request.GET.get("search", "")
-
-    query = f"""
-    PREFIX v: <http://kagebunshin.org/vocab/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-
-    SELECT ?char ?name (GROUP_CONCAT(?title; separator=", ") AS ?animeList)
-    WHERE {{
-      ?anime v:hasCharacter ?char ;
-             v:hasTitle ?title .
-
-      ?char foaf:name ?name .
-
-      FILTER(CONTAINS(LCASE(?name), LCASE("{search}")))
-    }}
-    GROUP BY ?char ?name
-    """
-
-    result = run_sparql(query)
-
-    if "error" in result:
-        return api_response(status.HTTP_500_INTERNAL_SERVER_ERROR, "Gagal ambil data", result)
-    
-    data = sparql_to_json(result)
-    data = rank_results(data, search, "name")
-    for item in data:
-      if "animeList" in item:
-          item["animeList"] = clean_anime(item["animeList"])
-
-    return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
 
 # INFO BOX
 
@@ -429,59 +593,90 @@ def get_character_by_pk(request):
     return api_response(status.HTTP_200_OK, "Berhasil ambil data karakter", character)
 
 @api_view(['GET'])
-def get_studio_by_pk(request):
-    pk = request.GET.get("pk", "").strip()
-    if not pk:
-        return api_response(status.HTTP_400_BAD_REQUEST, "Parameter 'pk' wajib diisi", None)
+def get_studio_wd_by_name(request, pk: str = None):
+    """Lookup a studio on Wikidata by name extracted from the URL path segment `pk`.
 
-    uri = f"http://kagebunshin.org/studio/{pk}"
+      Example URL path: `/search/studio/wd/Toei_Animation/` -> studio name `Toei Animation`.
+      Returns notable works (P800), founders (P112), country (P17), official website (P856) and logo (P154).
+      """
+    if not pk:
+      pk = (request.GET.get('pk') or '').strip()
+
+    if not pk:
+      return api_response(status.HTTP_400_BAD_REQUEST, "Parameter 'pk' (studio name) wajib diisi pada query param '?pk=...'", None)
+
+    # Normalize underscores to spaces and sanitize double quotes
+    studio_name = pk.replace('_', ' ').strip()
+    studio_name_escaped = studio_name.replace('"', '\\"')
 
     query = f"""
-    PREFIX v: <http://kagebunshin.org/vocab/>
-    PREFIX vcard: <http://www.w3.org/2006/vcard/ns#>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX wikibase: <http://wikiba.se/ontology#>
+    PREFIX bd: <http://www.bigdata.com/rdf#>
 
-    SELECT ?studio ?name ?logo ?url
-           (GROUP_CONCAT(DISTINCT ?found; separator=",") AS ?founders)
-           (GROUP_CONCAT(DISTINCT ?country; separator=",") AS ?originCountries)
-           (GROUP_CONCAT(DISTINCT ?anime; separator=",") AS ?animes)
+    SELECT DISTINCT
+      ?studio ?studioLabel
+      (GROUP_CONCAT(DISTINCT ?notableWorkLabel; separator=", ") AS ?notableWorks)
+      (GROUP_CONCAT(DISTINCT ?foundedByLabel; separator=", ") AS ?founders)
+      ?countryLabel
+      ?officialWebsite
+      ?logo
     WHERE {{
-      VALUES ?studio {{ <{uri}> }}
+      ?studio rdfs:label "{studio_name_escaped}"@en .
 
-      OPTIONAL {{ ?studio foaf:name ?name . }}
-      OPTIONAL {{ ?studio vcard:hasLogo ?logo . }}
-      OPTIONAL {{ ?studio vcard:hasURL ?url . }}
-      OPTIONAL {{ ?studio v:foundedBy ?found . }}
-      OPTIONAL {{ ?studio v:hasOriginCountry ?country . }}
+      # --- MENGAMBIL DATA ---
+      OPTIONAL {{ ?studio wdt:P800 ?notableWork . ?notableWork rdfs:label ?notableWorkLabel FILTER(LANG(?notableWorkLabel) = "en") }}
+      OPTIONAL {{ ?studio wdt:P112 ?foundedBy . ?foundedBy rdfs:label ?foundedByLabel FILTER(LANG(?foundedByLabel) = "en") }}
+      OPTIONAL {{ ?studio wdt:P17 ?country . ?country rdfs:label ?countryLabel FILTER(LANG(?countryLabel) = "en") }}
+      OPTIONAL {{ ?studio wdt:P856 ?officialWebsite . }}
+      OPTIONAL {{ ?studio wdt:P154 ?logo . }}
 
-      # Cari semua anime yang menunjuk ke studio ini melalui properti v:hasStudio
-      OPTIONAL {{ ?anime v:hasStudio ?studio . }}
+      # --- LABEL SERVICE ---
+      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en".
+        ?studio rdfs:label ?studioLabel .
+      }}
     }}
-    GROUP BY ?studio ?name ?logo ?url
+    GROUP BY
+      ?studio ?studioLabel
+      ?countryLabel ?officialWebsite ?logo
     LIMIT 1
     """
 
-    result = run_sparql(query)
-    if "error" in result:
-        return api_response(status.HTTP_500_INTERNAL_SERVER_ERROR, "Gagal ambil data studio", result)
+    url = 'https://query.wikidata.org/sparql'
+    headers = {'Accept': 'application/sparql-results+json', 'User-Agent': 'kagebunshin-be/1.0 (contact: dev@example.com)'}
+    try:
+      resp = requests.get(url, params={'query': query}, headers=headers, timeout=15)
+    except Exception as e:
+      return api_response(status.HTTP_502_BAD_GATEWAY, 'Gagal menghubungi Wikidata', {'error': str(e)})
 
-    items = sparql_to_json(result)
-    if not items:
-        return api_response(status.HTTP_404_NOT_FOUND, "Studio tidak ditemukan", None)
+    if resp.status_code != 200:
+      return api_response(status.HTTP_502_BAD_GATEWAY, 'Wikidata returned non-200', {'status_code': resp.status_code, 'text': resp.text[:200]})
 
-    item = items[0]
+    body = resp.json()
+    bindings = body.get('results', {}).get('bindings', [])
+    if not bindings:
+      return api_response(status.HTTP_404_NOT_FOUND, 'Studio Wikidata tidak ditemukan', None)
 
-    def split_field(val):
-        return [v.strip() for v in val.split(",") if v.strip()] if val else []
+    b = bindings[0]
 
-    studio = {
-        "uri": item.get("studio"),
-        "name": item.get("name"),
-        "logo": item.get("logo"),
-        "url": item.get("url"),
-        "founders": split_field(item.get("founders")),
-        "originCountries": split_field(item.get("originCountries")),
-        "animeList": split_field(item.get("animes")),
+    def read(binding, key):
+      v = binding.get(key)
+      if not v:
+        return None
+      return v.get('value')
+
+    notable_raw = read(b, 'notableWorks') or ''
+    founders_raw = read(b, 'founders') or ''
+
+    data = {
+      'wikidataUri': read(b, 'studio'),
+      'name': read(b, 'studioLabel') or studio_name,
+      'notableWorks': [s for s in notable_raw.split('||') if s],
+      'founders': [s for s in founders_raw.split('||') if s],
+      'countries': read(b, 'countryLabel'),
+      'officialWebsite': read(b, 'officialWebsite'),
+      'logo': read(b, 'logo'),
     }
 
-    return api_response(status.HTTP_200_OK, "Berhasil ambil data studio", studio)
+    return api_response(status.HTTP_200_OK, 'Berhasil ambil data dari Wikidata (by name)', data)
