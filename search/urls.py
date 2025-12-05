@@ -12,4 +12,8 @@ urlpatterns = [
     path('anime/query/', query_anime, name='query_anime'),
     path('character/query/', query_character, name='query_character'),
     path('all/query/', query_all, name='query_all'),
+
+    path('anime/pk/', get_anime_by_pk, name='get_anime_by_pk'),
+    path('character/pk/', get_character_by_pk, name='get_character_by_pk'),
+    path('studio/pk/', get_studio_wd_by_name, name='get_studio_wd_by_name'),
 ]
