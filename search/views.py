@@ -36,11 +36,11 @@ def get_anime(request):
     query = """
     PREFIX v: <http://kagebunshin.org/vocab/>
 
-    SELECT ?anime ?image ?title ?year (GROUP_CONCAT(?genreAll; separator=",") AS ?genres)
+    SELECT ?anime ?image ?title ?year (GROUP_CONCAT(DISTINCT ?themeAll; separator=",") AS ?themes)
     WHERE {
       ?anime v:hasImage ?image ;
              v:hasTitle ?title ;
-             v:hasGenre ?genreAll ;
+             v:hasTheme ?themeAll ;
              v:isReleased ?releaseNode .
 
       OPTIONAL {
@@ -61,26 +61,26 @@ def get_anime(request):
 
     data = sparql_to_json(result)
     for item in data:
-        if "genres" in item:
-            item["genres"] = str_to_list(item["genres"])
+        if "themes" in item:
+            item["themes"] = str_to_list(item["themes"])
 
     return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
 
 @api_view(['GET'])
-def get_anime_by_genre(request):
-    genre = request.GET.get("genre", "").strip()
+def get_anime_by_theme(request):
+    theme = request.GET.get("theme", "").strip()
 
-    if not genre:
+    if not theme:
         return api_response(
             status.HTTP_400_BAD_REQUEST,
-            "Parameter 'genre' wajib diisi",
+            "Parameter 'theme' wajib diisi",
             None
         )
 
-    filter_genre = f"""
+    filter_theme = f"""
     FILTER EXISTS {{
-      ?anime v:hasGenre ?g .
-      FILTER(LCASE(?g) = LCASE("{genre}"))
+      ?anime v:hasTheme ?t .
+      FILTER(LCASE(?t) = LCASE("{theme}"))
     }}
     """
 
@@ -88,18 +88,18 @@ def get_anime_by_genre(request):
     PREFIX v: <http://kagebunshin.org/vocab/>
 
     SELECT ?anime ?image ?title ?year
-           (GROUP_CONCAT(?genreAll; separator=",") AS ?genres)
+           (GROUP_CONCAT(DISTINCT ?themeAll; separator=",") AS ?themes)
     WHERE {{
       ?anime v:hasImage ?image ;
              v:hasTitle ?title ;
-             v:hasGenre ?genreAll ;
+             v:hasTheme ?themeAll ;
              v:isReleased ?releaseNode .
 
       OPTIONAL {{
         ?releaseNode v:releasedYear ?year .
       }}
 
-      {filter_genre}
+      {filter_theme}
     }}
     GROUP BY ?anime ?image ?title ?year
     """
@@ -115,8 +115,8 @@ def get_anime_by_genre(request):
 
     data = sparql_to_json(result)
     for item in data:
-        if "genres" in item:
-            item["genres"] = str_to_list(item["genres"])
+        if "themes" in item:
+            item["themes"] = str_to_list(item["themes"])
     return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
 
 @api_view(['GET'])
@@ -125,7 +125,7 @@ def get_character(request):
     PREFIX v: <http://kagebunshin.org/vocab/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 
-    SELECT ?char ?name (GROUP_CONCAT(?title; separator=", ") AS ?animeList)
+    SELECT ?char ?name (GROUP_CONCAT(DISTINCT ?title; separator=", ") AS ?animeList)
     WHERE {
       ?anime v:hasCharacter ?char ;
         v:hasTitle ?title .
@@ -167,11 +167,11 @@ def sparql_anime(filter_title):
     PREFIX v: <http://kagebunshin.org/vocab/>
 
     SELECT ?anime ?image ?title ?year
-           (GROUP_CONCAT(?genreAll; separator=",") AS ?genres)
+           (GROUP_CONCAT(DISTINCT ?themeAll; separator=",") AS ?themes)
     WHERE {{
       ?anime v:hasImage ?image ;
              v:hasTitle ?title ;
-             v:hasGenre ?genreAll ;
+             v:hasTheme ?themeAll ;
              v:isReleased ?releaseNode .
 
       OPTIONAL {{
@@ -183,11 +183,11 @@ def sparql_anime(filter_title):
     GROUP BY ?anime ?image ?title ?year
     """
 
-def sparql_anime_by_genre(filter_title, genre):
-    filter_genre = f"""
+def sparql_anime_by_theme(filter_title, theme):
+    filter_theme = f"""
     FILTER EXISTS {{
-      ?anime v:hasGenre ?g .
-      FILTER(CONTAINS(LCASE(?g), LCASE("{genre}")))
+      ?anime v:hasTheme ?t .
+      FILTER(CONTAINS(LCASE(?t), LCASE("{theme}")))
     }}
     """
 
@@ -195,11 +195,11 @@ def sparql_anime_by_genre(filter_title, genre):
     PREFIX v: <http://kagebunshin.org/vocab/>
 
     SELECT ?anime ?image ?title ?year
-           (GROUP_CONCAT(?genreAll; separator=",") AS ?genres)
+           (GROUP_CONCAT(DISTINCT ?themeAll; separator=",") AS ?themes)
     WHERE {{
       ?anime v:hasImage ?image ;
              v:hasTitle ?title ;
-             v:hasGenre ?genreAll ;
+             v:hasTheme ?themeAll ;
              v:isReleased ?releaseNode .
 
       OPTIONAL {{
@@ -207,7 +207,7 @@ def sparql_anime_by_genre(filter_title, genre):
       }}
 
       {filter_title}
-      {filter_genre}
+      {filter_theme}
     }}
     GROUP BY ?anime ?image ?title ?year
     """
@@ -215,7 +215,7 @@ def sparql_anime_by_genre(filter_title, genre):
 @api_view(['GET'])
 def query_anime(request):
     search = request.GET.get("search", "")
-    genre = request.GET.get("genre", "")
+    theme = request.GET.get("theme", "")
 
     # Token search
     normalized = re.sub(r"[^a-zA-Z0-9 ]+", " ", search.lower()).strip()
@@ -240,8 +240,8 @@ def query_anime(request):
     
     all_filters = token_filters + "\n" + exact_filter
 
-    if genre:
-      query = sparql_anime_by_genre(all_filters, genre)
+    if theme:
+      query = sparql_anime_by_theme(all_filters, theme)
     else:
       query = sparql_anime(all_filters)
 
@@ -258,7 +258,7 @@ def query_anime(request):
     data = rank_results(data, search, "title")
 
     for item in data:
-        item["genres"] = [g.strip() for g in item["genres"].split(",") if g.strip()]
+        item["themes"] = [g.strip() for g in item["themes"].split(",") if g.strip()]
 
     return api_response(status.HTTP_200_OK, "Berhasil ambil data", data)
 
@@ -293,7 +293,7 @@ def query_character(request):
     PREFIX v: <http://kagebunshin.org/vocab/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 
-    SELECT ?char ?name (GROUP_CONCAT(?title; separator=", ") AS ?animeList)
+    SELECT ?char ?name (GROUP_CONCAT(DISTINCT ?title; separator=", ") AS ?animeList)
     WHERE {{
       ?anime v:hasCharacter ?char ;
              v:hasTitle ?title .
