@@ -8,6 +8,7 @@ import requests
 import re
 from difflib import SequenceMatcher
 import requests
+import json
 
 # pakai run_sparql dari api/sparql_client.py untuk ambil data dari GraphDB
 # pakai sparql_to_json dari api/views.py untuk ratain (mempermudah) hasil SPARQL ke JSON biasa
@@ -554,8 +555,8 @@ def get_character_by_pk(request):
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX vcard: <http://www.w3.org/2006/vcard/ns#>
 
-    SELECT ?char ?name ?fullName ?altName ?desc ?url
-           (GROUP_CONCAT(DISTINCT ?title; separator=", ") AS ?animeList)
+    SELECT ?char ?name ?fullName ?altName ?desc ?url ?attributes
+      (GROUP_CONCAT(DISTINCT ?title; separator=", ") AS ?animeList)
     WHERE {{
       VALUES ?char {{ <{uri}> }}
 
@@ -564,13 +565,14 @@ def get_character_by_pk(request):
       OPTIONAL {{ ?char v:hasAltName ?altName . }}
       OPTIONAL {{ ?char v:hasDescription ?desc . }}
       OPTIONAL {{ ?char vcard:hasURL ?url . }}
+      OPTIONAL {{ ?char v:hasAttributes ?attributes . }}
 
       OPTIONAL {{
         ?anime v:hasCharacter ?char ;
                v:hasTitle ?title .
       }}
     }}
-    GROUP BY ?char ?name ?fullName ?altName ?desc ?url
+    GROUP BY ?char ?name ?fullName ?altName ?desc ?url ?attributes
     LIMIT 1
     """
 
@@ -590,9 +592,51 @@ def get_character_by_pk(request):
         "fullName": item.get("fullName"),
         "altName": item.get("altName"),
         "description": item.get("desc"),
+        "attributes": [],
         "url": item.get("url"),
         "animeList": clean_anime(item.get("animeList")) if item.get("animeList") else []
     }
+
+    # Parse attributes field if present. Expecting a JSON array string like:
+    # "[{\"name\": \"Birthday\", \"value\": \"August 23\"}, ...]"
+    raw_attrs = item.get("attributes")
+    if raw_attrs:
+      parsed = []
+      try:
+        parsed_json = json.loads(raw_attrs)
+        if isinstance(parsed_json, list):
+          parsed = parsed_json
+        elif isinstance(parsed_json, dict):
+          parsed = [parsed_json]
+      except Exception:
+        # try to be more permissive: replace single quotes with double quotes
+        try:
+          cleaned = raw_attrs.replace("'", '"')
+          parsed_json = json.loads(cleaned)
+          if isinstance(parsed_json, list):
+            parsed = parsed_json
+          elif isinstance(parsed_json, dict):
+            parsed = [parsed_json]
+        except Exception:
+          # last resort: attempt to extract key/value pairs with regex
+          try:
+            pairs = re.findall(r'\{[^}]*\}', raw_attrs)
+            for p in pairs:
+              # remove enclosing braces and split by commas
+              body = p.strip('{}')
+              attrs = {}
+              for part in re.split(r',\s*(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)', body):
+                kv = part.split(':', 1)
+                if len(kv) == 2:
+                  k = kv[0].strip().strip('"\'')
+                  v = kv[1].strip().strip('"\'')
+                  attrs[k] = v
+              if attrs:
+                parsed.append(attrs)
+          except Exception:
+            parsed = []
+
+      character["attributes"] = parsed
 
     return api_response(status.HTTP_200_OK, "Berhasil ambil data karakter", character)
 
